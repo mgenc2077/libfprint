@@ -44,8 +44,8 @@ ninja -C _build
 ```
 
 `-Ddrivers=goodixtls53xd` keeps the build to this one driver (and avoids pulling
-pixman/nss/etc. that other drivers need). On a modern GCC (14+) add
-`-Dc_args=-Wno-error=incompatible-pointer-types` — this is 1.94.1-era code.
+pixman/nss/etc. that other drivers need). The driver compiles cleanly under the
+default `-Werror` — no warning-suppression flags needed.
 
 ## Test on hardware
 

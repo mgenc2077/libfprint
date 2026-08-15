@@ -235,7 +235,7 @@ check_config_upload (FpDevice * dev, gboolean success,
       fpi_ssm_next_state (user_data);
     }
 }
-static void
+static void G_GNUC_UNUSED
 check_powerdown_scan_freq (FpDevice * dev, gboolean success,
                            gpointer user_data, GError * error)
 {
@@ -259,7 +259,7 @@ enum otp_write_states {
   OTP_WRITE_NUM,
 };
 
-static void
+static void G_GNUC_UNUSED
 otp_write_run (FpiSsm * ssm, FpDevice * dev)
 {
   /*FpiDeviceGoodixTls53XD* self = FPI_DEVICE_GOODIXTLS53XD(dev);
@@ -584,13 +584,13 @@ scan_empty_run (FpiSsm * ssm, FpDevice * dev)
         FpImageDevice * img_dev = FP_IMAGE_DEVICE (dev);
         FpiDeviceGoodixTls53XD * self = FPI_DEVICE_GOODIXTLS53XD (img_dev);
         guint8 payload[] = {0x41, 0x03, self->otp[26], 0x00, self->otp[26] - 6, 0x00, self->otp[45], 0x00, self->otp[45] - 4, 0x00};
-        goodix_tls_read_image (dev, &payload, sizeof (payload), on_scan_empty_img, ssm);
+        goodix_tls_read_image (dev, payload, sizeof (payload), on_scan_empty_img, ssm);
         break;
       }
     }
 }
 
-static void
+static void G_GNUC_UNUSED
 scan_empty_img (FpDevice * dev, FpiSsm * ssm)
 {
   fpi_ssm_start_subsm (ssm, fpi_ssm_new (dev, scan_empty_run, SCAN_EMPTY_NUM));
@@ -603,7 +603,7 @@ scan_get_img (FpDevice * dev, FpiSsm * ssm)
   FpiDeviceGoodixTls53XD * self = FPI_DEVICE_GOODIXTLS53XD (img_dev);
   guint8 payload[] = {0x41, 0x03, self->otp[26], 0x00, self->otp[26] - 6, 0x00, self->otp[45], 0x00, self->otp[45] - 4, 0x00};
 
-  goodix_tls_read_image (dev, &payload, sizeof (payload), scan_on_read_img, ssm);
+  goodix_tls_read_image (dev, payload, sizeof (payload), scan_on_read_img, ssm);
 }
 
 const guint8 fdt_switch_state_mode_53xd[] = {
@@ -652,7 +652,11 @@ scan_run_state (FpiSsm * ssm, FpDevice * dev)
 
     case SCAN_STAGE_GET_IMG:
       fpi_image_device_report_finger_status (img_dev, TRUE);
-      guint16 payload = {0x05, 0x03};
+      /* Preserved behavior: the original `{0x05, 0x03}` was a scalar init, so
+       * only 0x05 was ever used (0x03 silently dropped). Kept as-is to match the
+       * validated runtime. If the register value was meant to be 16-bit, this is
+       * where to revisit it. */
+      guint16 payload = 0x05;
       goodix_send_write_sensor_register (dev, 556, payload, write_sensor_complete, ssm);
       break;
     }

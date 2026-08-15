@@ -205,7 +205,7 @@ goodix_receive_preset_psk_read (FpDevice *dev, guint8 *data, guint16 length,
       return;
     }
 
-  GoodixPresetPskResponse * response = data + sizeof (guint8);
+  GoodixPresetPskResponse * response = (GoodixPresetPskResponse *) (data + sizeof (guint8));
   psk_len = response->length;
   if (length < psk_len + sizeof (guint8) + sizeof (GoodixPresetPskResponse))
     {
@@ -1057,7 +1057,10 @@ void
 goodix_send_read_otp (FpDevice * dev, GoodixDefaultCallback callback,
                       gpointer user_data)
 {
-  guint8 payload = {0x40, 0x00};
+  /* Preserved behavior: `{0x40, 0x00}` was a scalar init sending sizeof=1 byte
+   * (0x40); the 0x00 was silently dropped. Kept as-is to match the validated
+   * runtime. */
+  guint8 payload = 0x40;
   GoodixCallbackInfo * cb_info;
 
   if (callback)

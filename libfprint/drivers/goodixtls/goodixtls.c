@@ -39,14 +39,14 @@
 #include "goodixtls.h"
 
 static GError *
-err_from_ssl ()
+err_from_ssl (void)
 {
   GError * err = malloc (sizeof (GError));
   unsigned long code = ERR_get_error ();
 
   err->code = code;
   const char * msg = ERR_reason_error_string (code);
-  err->message = malloc (strlen (msg));
+  err->message = malloc (strlen (msg) + 1);
   strcpy (err->message, msg);
   return err;
 }

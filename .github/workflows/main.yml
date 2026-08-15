@@ -51,17 +51,15 @@ jobs:
         run: pip install 'meson==1.12.0' 'ninja==1.13.0'
 
       - name: Build libfprint (goodixtls53xd only)
-        # -Dwerror=false: this driver is 1.94.1-era code; don't fail on
-        # non-fatal warnings. The runner ships GCC 14+ (which promotes
-        # -Wincompatible-pointer-types etc. to errors), so also pass
-        # -Dc_args=-Wno-error=incompatible-pointer-types.
+        # The goodixtls driver was cleaned up to compile under the default
+        # -Werror (no -Dwerror=false / -Wno-error escape hatches needed).
         # -Ddrivers=goodixtls53xd: build only the 538d driver (avoids pixman
         # via aes3500). -Dudev_rules=enabled: our single driver doesn't pull
         # the 'udev' helper, so rules are off by default and packaging needs
         # 70-libfprint-2.rules — force it on. -Ddoc=false: docs aren't packaged.
         # Build dir is 'build' to match the nfpm steps below.
         run: |
-          meson setup build --prefix /usr/ --buildtype=release -Dwerror=false -Ddrivers=goodixtls53xd -Dc_args=-Wno-error=incompatible-pointer-types -Dudev_rules=enabled -Dudev_rules_dir=/usr/lib/udev/rules.d -Ddoc=false
+          meson setup build --prefix /usr/ --buildtype=release -Ddrivers=goodixtls53xd -Dudev_rules=enabled -Dudev_rules_dir=/usr/lib/udev/rules.d -Ddoc=false
           meson compile -C build --verbose
       - name: Install nFPM
         run: echo 'deb [trusted=yes] https://repo.goreleaser.com/apt/ /' | sudo tee /etc/apt/sources.list.d/goreleaser.list && sudo apt update && sudo apt install nfpm
