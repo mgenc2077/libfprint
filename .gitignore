@@ -2,3 +2,10 @@
 *.swp
 _build
 test.sh
+
+# 538d bring-up scratch (captures, logs, enrolled template, debug helper)
+*.log
+*.pgm
+*.png
+test-storage.variant
+usbreset.py
