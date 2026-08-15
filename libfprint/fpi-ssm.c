@@ -73,7 +73,7 @@
 struct _FpiSsm
 {
   FpDevice               *dev;
-  const char             *name;
+  char                   *name;
   FpiSsm                 *parentsm;
   gpointer                ssm_data;
   GDestroyNotify          ssm_data_destroy;
@@ -81,6 +81,7 @@ struct _FpiSsm
   int                     start_cleanup;
   int                     cur_state;
   gboolean                completed;
+  gboolean                silence;
   GSource                *timeout;
   GError                 *error;
   FpiSsmCompletedCallback callback;
@@ -245,10 +246,11 @@ fpi_ssm_free (FpiSsm *machine)
 
 /* Invoke the state handler */
 static void
-__ssm_call_handler (FpiSsm *machine)
+__ssm_call_handler (FpiSsm *machine, gboolean force_msg)
 {
-  fp_dbg ("[%s] %s entering state %d", fp_device_get_driver (machine->dev),
-          machine->name, machine->cur_state);
+  if (force_msg || !machine->silence)
+    fp_dbg ("[%s] %s entering state %d", fp_device_get_driver (machine->dev),
+            machine->name, machine->cur_state);
   machine->handler (machine, machine->dev);
 }
 
@@ -275,7 +277,7 @@ fpi_ssm_start (FpiSsm *ssm, FpiSsmCompletedCallback callback)
   ssm->cur_state = 0;
   ssm->completed = FALSE;
   ssm->error = NULL;
-  __ssm_call_handler (ssm);
+  __ssm_call_handler (ssm, TRUE);
 }
 
 static void
@@ -346,7 +348,7 @@ fpi_ssm_mark_completed (FpiSsm *machine)
   if (next_state < machine->nr_states)
     {
       machine->cur_state = next_state;
-      __ssm_call_handler (machine);
+      __ssm_call_handler (machine, TRUE);
       return;
     }
 
@@ -460,7 +462,7 @@ fpi_ssm_next_state (FpiSsm *machine)
   if (machine->cur_state == machine->nr_states)
     fpi_ssm_mark_completed (machine);
   else
-    __ssm_call_handler (machine);
+    __ssm_call_handler (machine, FALSE);
 }
 
 void
@@ -537,7 +539,7 @@ fpi_ssm_jump_to_state (FpiSsm *machine, int state)
   if (machine->cur_state == machine->nr_states)
     fpi_ssm_mark_completed (machine);
   else
-    __ssm_call_handler (machine);
+    __ssm_call_handler (machine, FALSE);
 }
 
 typedef struct
@@ -613,7 +615,7 @@ fpi_ssm_get_cur_state (FpiSsm *machine)
  *
  * Returns the error code set by fpi_ssm_mark_failed().
  *
- * Returns: (transfer none): a error code
+ * Returns: (transfer none): a #GError or %NULL if not set.
  */
 GError *
 fpi_ssm_get_error (FpiSsm *machine)
@@ -629,7 +631,7 @@ fpi_ssm_get_error (FpiSsm *machine)
  *
  * Returns the error code set by fpi_ssm_mark_failed().
  *
- * Returns: (transfer full): a error code
+ * Returns: (transfer full): a #GError or %NULL if not set.
  */
 GError *
 fpi_ssm_dup_error (FpiSsm *machine)
@@ -643,14 +645,32 @@ fpi_ssm_dup_error (FpiSsm *machine)
 }
 
 /**
+ * fpi_ssm_silence_debug:
+ * @machine: an #FpiSsm state machine
+ *
+ * Turn off state change debug messages from this SSM. This does not disable
+ * all messages, as e.g. the initial state, SSM completion and cleanup states
+ * are still printed out.
+ *
+ * Use if the SSM loops and would flood the debug log otherwise.
+ */
+void
+fpi_ssm_silence_debug (FpiSsm *machine)
+{
+  g_return_if_fail (machine != NULL);
+
+  machine->silence = TRUE;
+}
+
+/**
  * fpi_ssm_usb_transfer_cb:
  * @transfer: a #FpiUsbTransfer
  * @device: a #FpDevice
  * @unused_data: User data (unused)
- * @error: The #GError or %NULL
+ * @error: (transfer full): a #GError or %NULL.
  *
  * Can be used in as a #FpiUsbTransfer callback handler to automatically
- * advance or fail a statemachine on transfer completion.
+ * advance or fail a state machine on transfer completion.
  *
  * Make sure to set the #FpiSsm on the transfer.
  */
@@ -658,10 +678,11 @@ void
 fpi_ssm_usb_transfer_cb (FpiUsbTransfer *transfer, FpDevice *device,
                          gpointer unused_data, GError *error)
 {
+  g_return_if_fail (transfer != NULL);
   g_return_if_fail (transfer->ssm);
 
   if (error)
-    fpi_ssm_mark_failed (transfer->ssm, error);
+    fpi_ssm_mark_failed (transfer->ssm, g_steal_pointer (&error));
   else
     fpi_ssm_next_state (transfer->ssm);
 }
@@ -673,10 +694,10 @@ fpi_ssm_usb_transfer_cb (FpiUsbTransfer *transfer, FpDevice *device,
  * @weak_ptr: A #gpointer pointer to nullify. You can pass a pointer to any
  *            #gpointer to nullify when the callback is completed. I.e a
  *            pointer to the current #FpiUsbTransfer.
- * @error: The #GError or %NULL
+ * @error: (transfer full): a #GError or %NULL.
  *
  * Can be used in as a #FpiUsbTransfer callback handler to automatically
- * advance or fail a statemachine on transfer completion.
+ * advance or fail a state machine on transfer completion.
  * Passing a #gpointer* as @weak_ptr permits to nullify it once we're done
  * with the transfer.
  *
@@ -687,12 +708,13 @@ fpi_ssm_usb_transfer_with_weak_pointer_cb (FpiUsbTransfer *transfer,
                                            FpDevice *device, gpointer weak_ptr,
                                            GError *error)
 {
+  g_return_if_fail (transfer != NULL);
   g_return_if_fail (transfer->ssm);
 
   if (weak_ptr)
     g_nullify_pointer ((gpointer *) weak_ptr);
 
-  fpi_ssm_usb_transfer_cb (transfer, device, weak_ptr, error);
+  fpi_ssm_usb_transfer_cb (transfer, device, weak_ptr, g_steal_pointer (&error));
 }
 
 /**
@@ -700,10 +722,10 @@ fpi_ssm_usb_transfer_with_weak_pointer_cb (FpiUsbTransfer *transfer,
  * @transfer: a #FpiSpiTransfer
  * @device: a #FpDevice
  * @unused_data: User data (unused)
- * @error: The #GError or %NULL
+ * @error: (transfer full): a #GError or %NULL.
  *
  * Can be used in as a #FpiSpiTransfer callback handler to automatically
- * advance or fail a statemachine on transfer completion.
+ * advance or fail a state machine on transfer completion.
  *
  * Make sure to set the #FpiSsm on the transfer.
  */
@@ -711,10 +733,11 @@ void
 fpi_ssm_spi_transfer_cb (FpiSpiTransfer *transfer, FpDevice *device,
                          gpointer unused_data, GError *error)
 {
+  g_return_if_fail (transfer != NULL);
   g_return_if_fail (transfer->ssm);
 
   if (error)
-    fpi_ssm_mark_failed (transfer->ssm, error);
+    fpi_ssm_mark_failed (transfer->ssm, g_steal_pointer (&error));
   else
     fpi_ssm_next_state (transfer->ssm);
 }
@@ -726,10 +749,10 @@ fpi_ssm_spi_transfer_cb (FpiSpiTransfer *transfer, FpDevice *device,
  * @weak_ptr: A #gpointer pointer to nullify. You can pass a pointer to any
  *            #gpointer to nullify when the callback is completed. I.e a
  *            pointer to the current #FpiSpiTransfer.
- * @error: The #GError or %NULL
+ * @error: (transfer full): a #GError or %NULL.
  *
  * Can be used in as a #FpiSpiTransfer callback handler to automatically
- * advance or fail a statemachine on transfer completion.
+ * advance or fail a state machine on transfer completion.
  * Passing a #gpointer* as @weak_ptr permits to nullify it once we're done
  * with the transfer.
  *
@@ -740,10 +763,11 @@ fpi_ssm_spi_transfer_with_weak_pointer_cb (FpiSpiTransfer *transfer,
                                            FpDevice *device, gpointer weak_ptr,
                                            GError *error)
 {
+  g_return_if_fail (transfer != NULL);
   g_return_if_fail (transfer->ssm);
 
   if (weak_ptr)
     g_nullify_pointer ((gpointer *) weak_ptr);
 
-  fpi_ssm_spi_transfer_cb (transfer, device, weak_ptr, error);
+  fpi_ssm_spi_transfer_cb (transfer, device, weak_ptr, g_steal_pointer (&error));
 }

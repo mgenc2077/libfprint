@@ -21,6 +21,9 @@ except Exception as e:
 
 FPrint = None
 
+# Exit with error on any exception, included those happening in async callbacks
+sys.excepthook = lambda *args: (traceback.print_exception(*args), sys.exit(1))
+
 def load_image(img):
     png = cairo.ImageSurface.create_from_png(img)
 
@@ -43,12 +46,36 @@ def load_image(img):
 
     return img
 
-if hasattr(os.environ, 'MESON_SOURCE_ROOT'):
-    root = os.environ['MESON_SOURCE_ROOT']
-else:
-    root = os.path.join(os.path.dirname(__file__), '..')
 
-imgdir = os.path.join(root, 'examples', 'prints')
+def transform_image(surface, dx=0, dy=0, dw=0, dh=0, angle=0):
+    assert dw >= 0 and dh >= 0, "dw/dh must be non-negative"
+
+    w = surface.get_width()
+    h = surface.get_height()
+    result = cairo.ImageSurface(cairo.Format.A8, w, h)
+    cr = cairo.Context(result)
+
+    # Transform around center: translate to center, scale, rotate, then
+    # offset the source so its center aligns with the origin.
+    cr.translate(w / 2 + dx, h / 2 + dy)
+    cr.rotate(angle)
+    cr.scale((w - dw) / w, (h - dh) / h)
+    cr.translate(-w / 2, -h / 2)
+
+    cr.set_source_surface(surface)
+    cr.paint()
+    return result
+
+
+if 'FP_PRINTS_PATH' in os.environ:
+    prints_path = os.environ['FP_PRINTS_PATH']
+else:
+    if 'MESON_SOURCE_ROOT' in os.environ:
+        root = os.environ['MESON_SOURCE_ROOT']
+    else:
+        root = os.path.join(os.path.dirname(__file__), '..')
+
+    prints_path = os.path.join(root, 'examples', 'prints')
 
 ctx = GLib.main_context_default()
 
@@ -73,9 +100,11 @@ class VirtualImage(unittest.TestCase):
         assert cls.dev is not None, "You need to compile with virtual_image for testing"
 
         cls.prints = {}
-        for f in glob.glob(os.path.join(imgdir, '*.png')):
+        for f in glob.glob(os.path.join(prints_path, '*.png')):
             n = os.path.basename(f)[:-4]
             cls.prints[n] = load_image(f)
+
+        assert cls.prints, "No prints found in " + prints_path
 
     @classmethod
     def tearDownClass(cls):
@@ -118,8 +147,11 @@ class VirtualImage(unittest.TestCase):
         while iterate and ctx.pending():
             ctx.iteration(False)
 
-    def send_image(self, image, iterate=True):
+    def send_image(self, image, iterate=True, dx=0, dy=0, dw=0, dh=0, angle=0):
         img = self.prints[image]
+
+        if dx or dy or dw or dh or angle:
+            img = transform_image(img, dx, dy, dw, dh, angle)
 
         mem = img.get_data()
         mem = mem.tobytes()
@@ -132,10 +164,29 @@ class VirtualImage(unittest.TestCase):
         while iterate and ctx.pending():
             ctx.iteration(False)
 
+    def wait_for_finger_status(self, finger_status, timeout=5000):
+        done = False
+        def on_timeout_reached():
+            nonlocal done
+            done = True
+
+        if 'UNDER_VALGRIND' in os.environ:
+            timeout = timeout * 3
+
+        source = GLib.timeout_add(timeout, on_timeout_reached)
+        while not done:
+            if self.dev.get_finger_status() & finger_status:
+                GLib.source_remove(source)
+                return
+            ctx.iteration(True)
+
+        self.assertFalse(done)
+
     def test_features(self):
         self.assertTrue(self.dev.has_feature(FPrint.DeviceFeature.CAPTURE))
         self.assertTrue(self.dev.has_feature(FPrint.DeviceFeature.IDENTIFY))
         self.assertTrue(self.dev.has_feature(FPrint.DeviceFeature.VERIFY))
+        self.assertTrue(self.dev.has_feature(FPrint.DeviceFeature.UPDATE_PRINT))
         self.assertFalse(self.dev.has_feature(FPrint.DeviceFeature.DUPLICATES_CHECK))
         self.assertFalse(self.dev.has_feature(FPrint.DeviceFeature.STORAGE))
         self.assertFalse(self.dev.has_feature(FPrint.DeviceFeature.STORAGE_LIST))
@@ -144,7 +195,8 @@ class VirtualImage(unittest.TestCase):
         self.assertEqual(self.dev.get_features(),
                          FPrint.DeviceFeature.CAPTURE |
                          FPrint.DeviceFeature.IDENTIFY |
-                         FPrint.DeviceFeature.VERIFY)
+                         FPrint.DeviceFeature.VERIFY |
+                         FPrint.DeviceFeature.UPDATE_PRINT)
 
     def test_capture_prevents_close(self):
         cancel = Gio.Cancellable()
@@ -167,7 +219,7 @@ class VirtualImage(unittest.TestCase):
         while not self._cancelled:
             ctx.iteration(True)
 
-    def enroll_print(self, image):
+    def enroll_print(self, image, template=None):
         self._step = 0
         self._enrolled = None
 
@@ -181,19 +233,21 @@ class VirtualImage(unittest.TestCase):
             self.assertEqual(self.dev.get_finger_status(), FPrint.FingerStatusFlags.NONE)
             self._enrolled = fp
 
-        template = FPrint.Print.new(self.dev)
-        template.props.finger = FPrint.Finger.LEFT_THUMB
-        template.props.username = "testuser"
-        template.props.description = "test print"
-        datetime = GLib.DateTime.new_now_local()
-        date = GLib.Date()
-        date.set_dmy(*datetime.get_ymd()[::-1])
-        template.props.enroll_date = date
+        if template is None:
+            template = FPrint.Print.new(self.dev)
+            template.props.finger = FPrint.Finger.LEFT_THUMB
+            template.props.username = "testuser"
+            template.props.description = "test print"
+            datetime = GLib.DateTime.new_now_local()
+            date = GLib.Date()
+            date.set_dmy(*datetime.get_ymd()[::-1])
+            template.props.enroll_date = date
         self.assertEqual(self.dev.get_finger_status(), FPrint.FingerStatusFlags.NONE)
         self.dev.enroll(template, None, progress_cb, tuple(), done_cb)
 
         # Note: Assumes 5 enroll steps for this device!
-        self.send_image(image)
+        self.wait_for_finger_status(FPrint.FingerStatusFlags.NEEDED)
+        self.send_image(image, dx=0, dy=0, dw=0, dh=0, angle=0)
         while self._step < 1:
             ctx.iteration(True)
 
@@ -203,8 +257,8 @@ class VirtualImage(unittest.TestCase):
         self.assertEqual(self.dev.get_finger_status(), FPrint.FingerStatusFlags.NEEDED)
         self.send_finger_report(True)
         self.assertEqual(self.dev.get_finger_status(),
-            FPrint.FingerStatusFlags.NEEDED | FPrint.FingerStatusFlags.PRESENT)
-        self.send_image(image)
+                         FPrint.FingerStatusFlags.NEEDED | FPrint.FingerStatusFlags.PRESENT)
+        self.send_image(image, dx=1, dy=0, dw=0, dh=0, angle=0.017)
         while self._step < 2:
             ctx.iteration(True)
         self.send_finger_report(False)
@@ -212,26 +266,27 @@ class VirtualImage(unittest.TestCase):
         self.assertEqual(self.dev.get_finger_status(), FPrint.FingerStatusFlags.NEEDED)
 
         self.send_finger_automatic(True)
-        self.send_image(image)
+        self.send_image(image, dx=-1, dy=1, dw=2, dh=0, angle=-0.035)
         while self._step < 3:
             ctx.iteration(True)
 
         self.assertEqual(self.dev.get_finger_status(), FPrint.FingerStatusFlags.NEEDED)
 
-        self.send_image(image)
+        self.send_image(image, dx=0, dy=-1, dw=0, dh=2, angle=0.035)
         while self._step < 4:
             ctx.iteration(True)
 
         self.assertEqual(self.dev.get_finger_status(), FPrint.FingerStatusFlags.NEEDED)
 
-        self.send_image(image)
+        self.send_image(image, dx=2, dy=0, dw=1, dh=1, angle=-0.017)
         while self._enrolled is None:
             ctx.iteration(True)
 
         self.assertEqual(self.dev.get_finger_status(), FPrint.FingerStatusFlags.NONE)
         self.assertEqual(self._enrolled.props.driver, self.dev.get_driver())
         self.assertEqual(self._enrolled.props.device_id, self.dev.get_device_id())
-        self.assertEqual(self._enrolled.props.device_stored, self.dev.has_storage())
+        self.assertEqual(self._enrolled.props.device_stored,
+                         bool(self.dev.get_features() & FPrint.DeviceFeature.STORAGE))
         self.assertIsNone(self._enrolled.get_image())
 
         return self._enrolled
@@ -250,7 +305,8 @@ class VirtualImage(unittest.TestCase):
         self._verify_match = None
         self._verify_fp = None
         self.dev.verify(fp_whorl, callback=verify_cb)
-        self.send_image('whorl')
+        self.wait_for_finger_status(FPrint.FingerStatusFlags.NEEDED)
+        self.send_image('whorl', dx=-2, dy=-1, dw=0, dh=0, angle=0.052)
         while self._verify_match is None:
             ctx.iteration(True)
         assert(self._verify_match)
@@ -259,15 +315,41 @@ class VirtualImage(unittest.TestCase):
         self._verify_match = None
         self._verify_fp = None
         self.dev.verify(fp_whorl, callback=verify_cb)
+        self.wait_for_finger_status(FPrint.FingerStatusFlags.NEEDED)
         self.send_image('tented_arch')
         while self._verify_match is None:
             ctx.iteration(True)
         assert(not self._verify_match)
 
+        # Test fingerprint updates
+        # Enroll a second print
+        fp_whorl_tended_arch = self.enroll_print('tented_arch', fp_whorl)
+
+        # Make sure the first print verifies successfully after the update
+        self._verify_match = None
+        self._verify_fp = None
+        self.dev.verify(fp_whorl_tended_arch, callback=verify_cb)
+        self.wait_for_finger_status(FPrint.FingerStatusFlags.NEEDED)
+        self.send_image('whorl', dx=3, dy=0, dw=4, dh=2, angle=-0.052)
+        while self._verify_match is None:
+            ctx.iteration(True)
+        assert(self._verify_match)
+
+        # Make sure the second print verifies successfully after the update
+        self._verify_match = None
+        self._verify_fp = None
+        self.dev.verify(fp_whorl_tended_arch, callback=verify_cb)
+        self.wait_for_finger_status(FPrint.FingerStatusFlags.NEEDED)
+        self.send_image('tented_arch')
+        while self._verify_match is None:
+            ctx.iteration(True)
+        assert(self._verify_match)
+
         # Test verify error cases
         self._verify_fp = None
         self._verify_error = None
         self.dev.verify(fp_whorl, callback=verify_cb)
+        self.wait_for_finger_status(FPrint.FingerStatusFlags.NEEDED)
         self.send_retry()
         while self._verify_fp is None and self._verify_error is None:
             ctx.iteration(True)
@@ -277,6 +359,7 @@ class VirtualImage(unittest.TestCase):
         self._verify_fp = None
         self._verify_error = None
         self.dev.verify(fp_whorl, callback=verify_cb)
+        self.wait_for_finger_status(FPrint.FingerStatusFlags.NEEDED)
         self.send_error()
         while self._verify_fp is None and self._verify_error is None:
             ctx.iteration(True)
@@ -300,6 +383,7 @@ class VirtualImage(unittest.TestCase):
 
         self._identify_fp = None
         self.dev.identify([fp_whorl, fp_tented_arch], callback=identify_cb)
+        self.wait_for_finger_status(FPrint.FingerStatusFlags.NEEDED)
         self.send_image('tented_arch')
         while self._identify_fp is None:
             ctx.iteration(True)
@@ -307,6 +391,7 @@ class VirtualImage(unittest.TestCase):
 
         self._identify_fp = None
         self.dev.identify([fp_whorl, fp_tented_arch], callback=identify_cb)
+        self.wait_for_finger_status(FPrint.FingerStatusFlags.NEEDED)
         self.send_image('whorl')
         while self._identify_fp is None:
             ctx.iteration(True)
@@ -316,6 +401,7 @@ class VirtualImage(unittest.TestCase):
         self._identify_fp = None
         self._identify_error = None
         self.dev.identify([fp_whorl, fp_tented_arch], callback=identify_cb)
+        self.wait_for_finger_status(FPrint.FingerStatusFlags.NEEDED)
         self.send_retry()
         while self._identify_fp is None and self._identify_error is None:
             ctx.iteration(True)
@@ -359,7 +445,8 @@ class VirtualImage(unittest.TestCase):
         self._verify_match = None
         self._verify_fp = None
         self.dev.verify(fp_whorl_new, callback=verify_cb)
-        self.send_image('whorl')
+        self.wait_for_finger_status(FPrint.FingerStatusFlags.NEEDED)
+        self.send_image('whorl', dx=-1, dy=2, dw=0, dh=3, angle=0.017)
         while self._verify_match is None:
             ctx.iteration(True)
         assert(self._verify_match)
@@ -367,6 +454,7 @@ class VirtualImage(unittest.TestCase):
         self._verify_match = None
         self._verify_fp = None
         self.dev.verify(fp_whorl_new, callback=verify_cb)
+        self.wait_for_finger_status(FPrint.FingerStatusFlags.NEEDED)
         self.send_image('tented_arch')
         while self._verify_match is None:
             ctx.iteration(True)

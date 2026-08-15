@@ -41,10 +41,17 @@
     </chapter>
 
     <chapter id="driver-helpers">
-      <title>USB and State Machine helpers</title>
+      <title>USB, SPI and State Machine helpers</title>
+      <xi:include href="xml/fpi-spi-transfer.xml"/>
       <xi:include href="xml/fpi-usb-transfer.xml"/>
       <xi:include href="xml/fpi-ssm.xml"/>
       <xi:include href="xml/fpi-log.xml"/>
+    </chapter>
+
+    <chapter id="driver-data">
+      <title>Binary buffer I/O</title>
+      <xi:include href="xml/fpi-byte-reader.xml"/>
+      <xi:include href="xml/fpi-byte-writer.xml"/>
     </chapter>
 
     <chapter id="driver-img">
