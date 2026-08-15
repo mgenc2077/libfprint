@@ -1,0 +1,55 @@
+name: Build Linux packages
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - master
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      # Build directly from the pushed branch (master). The upstream
+      # goodix-fp-linux-dev workflow first merged its goodixtls/sigfm branches
+      # into a 'buildpackage' branch; those branches don't exist in this fork —
+      # the goodixtls53xd (538d) driver lives on the build branch directly.
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.x'
+      - name: Install dependencies
+        run: sudo apt-get install -y libgusb-dev libgirepository1.0-dev libnss3-dev libgudev-1.0-dev gtk-doc-tools libopencv-dev doctest-dev
+      - uses: BSFishy/meson-build@v1.0.3
+        with:
+          action: build
+          # -Dwerror=false: this driver is 1.94.1-era code; don't fail on
+          # non-fatal warnings. If the runner ships GCC 14+ (which promotes
+          # -Wincompatible-pointer-types etc. to errors), also pass
+          # -Dc_args=-Wno-error=incompatible-pointer-types via a plain
+          # `meson setup` run-step instead of this action.
+          setup-options: --prefix /usr/ --buildtype=release -Dwerror=false
+          options: --verbose
+          meson-version: 1.12.0
+          ninja-version: 1.13.0
+      - name: Install nFPM
+        run: echo 'deb [trusted=yes] https://repo.goreleaser.com/apt/ /' | sudo tee /etc/apt/sources.list.d/goreleaser.list && sudo apt update && sudo apt install nfpm
+      - name: Prepare nFPM DEB config
+        run: cd /home/runner/work/libfprint/libfprint && cp nfpm_deb_sample.yaml nfpm_deb.yaml && sed -i "s/COMMITID/$(git rev-parse --short HEAD)/g" nfpm_deb.yaml && mkdir ./output && cd /home/runner/work/libfprint/libfprint/build && sed -i "s/LIBVERSION/$(meson introspect --projectinfo | jq -r '.version')/g" /home/runner/work/libfprint/libfprint/nfpm_deb.yaml
+      - name: Prepare nFPM RPM config
+        run: cd /home/runner/work/libfprint/libfprint && cp nfpm_rpm_sample.yaml nfpm_rpm.yaml && sed -i "s/COMMITID/$(git rev-parse --short HEAD)/g" nfpm_rpm.yaml && cd /home/runner/work/libfprint/libfprint/build && sed -i "s/LIBVERSION/$(meson introspect --projectinfo | jq -r '.version')/g" /home/runner/work/libfprint/libfprint/nfpm_rpm.yaml
+      - name: Prepare nFPM Arch config
+        run: cd /home/runner/work/libfprint/libfprint && cp nfpm_arch_sample.yaml nfpm_arch.yaml && sed -i "s/COMMITID/$(git rev-parse --short HEAD)/g" nfpm_arch.yaml && cd /home/runner/work/libfprint/libfprint/build && sed -i "s/LIBVERSION/$(meson introspect --projectinfo | jq -r '.version')/g" /home/runner/work/libfprint/libfprint/nfpm_arch.yaml
+      - name: Generating DEB package
+        run: nfpm pkg --packager deb --config ./nfpm_deb.yaml --target ./output/
+      - name: Generating RPM package
+        run: nfpm pkg --packager rpm --config ./nfpm_rpm.yaml --target ./output/
+      - name: Generating ArchLinux package
+        run: nfpm pkg --packager archlinux --config ./nfpm_arch.yaml --target ./output/
+      - uses: actions/upload-artifact@v7
+        with:
+          name: meson-build-artifacts
+          path: /home/runner/work/libfprint/libfprint/build
+      - uses: actions/upload-artifact@v7
+        with:
+          name: deb-rpm-arch-packages
+          path: /home/runner/work/libfprint/libfprint/output
