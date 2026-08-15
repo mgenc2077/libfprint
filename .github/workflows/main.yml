@@ -1,13 +1,19 @@
 name: Build Linux packages
 on:
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release'
+        required: true
   push:
-    branches:
-      - master
+    tags:
+      - 'v*.*.*'
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write   # required for softprops/action-gh-release to create the release
     steps:
       # Build directly from the pushed branch (master). The upstream
       # goodix-fp-linux-dev workflow first merged its goodixtls/sigfm branches
@@ -17,6 +23,24 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: '3.x'
+      - name: Resolve release tag and package version
+        id: rel
+        # RAW_TAG is the pushed tag (github.ref_name) or the workflow_dispatch
+        # input. Passed via env (not inline ${{ }}) to avoid shell injection.
+        # PKG_VERSION drops the leading 'v' so packages are versioned e.g. 1.0.0.
+        env:
+          RAW_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          # Reject anything that isn't a clean vX.Y.Z(-suffix) tag before it is
+          # used in sed below: a tag/input may legally contain shell and sed
+          # metacharacters (';', '$', '/', backticks), and GNU sed's 'e' command
+          # would turn substitution into arbitrary code execution.
+          if ! printf '%s' "$RAW_TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$'; then
+            echo "Refusing to release: tag '$RAW_TAG' is not a valid version (expected vX.Y.Z)" >&2
+            exit 1
+          fi
+          echo "tag=${RAW_TAG}" >> "$GITHUB_OUTPUT"
+          echo "PKG_VERSION=${RAW_TAG#v}" >> "$GITHUB_ENV"
       - name: Install dependencies
         # Only what the goodixtls53xd driver + packaging need: gusb,
         # gobject-introspection (for the GIR/typelib nfpm ships), and openssl
@@ -42,22 +66,22 @@ jobs:
       - name: Install nFPM
         run: echo 'deb [trusted=yes] https://repo.goreleaser.com/apt/ /' | sudo tee /etc/apt/sources.list.d/goreleaser.list && sudo apt update && sudo apt install nfpm
       - name: Prepare nFPM DEB config
-        run: cd /home/runner/work/libfprint/libfprint && cp nfpm_deb_sample.yaml nfpm_deb.yaml && sed -i "s/COMMITID/$(git rev-parse --short HEAD)/g" nfpm_deb.yaml && mkdir ./output && cd /home/runner/work/libfprint/libfprint/build && sed -i "s/LIBVERSION/$(meson introspect --projectinfo | jq -r '.version')/g" /home/runner/work/libfprint/libfprint/nfpm_deb.yaml
+        run: cd /home/runner/work/libfprint/libfprint && cp nfpm_deb_sample.yaml nfpm_deb.yaml && sed -i "s/COMMITID/$(git rev-parse --short HEAD)/g" nfpm_deb.yaml && mkdir ./output && cd /home/runner/work/libfprint/libfprint/build && sed -i "s/LIBVERSION/$PKG_VERSION/g" /home/runner/work/libfprint/libfprint/nfpm_deb.yaml
       - name: Prepare nFPM RPM config
-        run: cd /home/runner/work/libfprint/libfprint && cp nfpm_rpm_sample.yaml nfpm_rpm.yaml && sed -i "s/COMMITID/$(git rev-parse --short HEAD)/g" nfpm_rpm.yaml && cd /home/runner/work/libfprint/libfprint/build && sed -i "s/LIBVERSION/$(meson introspect --projectinfo | jq -r '.version')/g" /home/runner/work/libfprint/libfprint/nfpm_rpm.yaml
+        run: cd /home/runner/work/libfprint/libfprint && cp nfpm_rpm_sample.yaml nfpm_rpm.yaml && sed -i "s/COMMITID/$(git rev-parse --short HEAD)/g" nfpm_rpm.yaml && cd /home/runner/work/libfprint/libfprint/build && sed -i "s/LIBVERSION/$PKG_VERSION/g" /home/runner/work/libfprint/libfprint/nfpm_rpm.yaml
       - name: Prepare nFPM Arch config
-        run: cd /home/runner/work/libfprint/libfprint && cp nfpm_arch_sample.yaml nfpm_arch.yaml && sed -i "s/COMMITID/$(git rev-parse --short HEAD)/g" nfpm_arch.yaml && cd /home/runner/work/libfprint/libfprint/build && sed -i "s/LIBVERSION/$(meson introspect --projectinfo | jq -r '.version')/g" /home/runner/work/libfprint/libfprint/nfpm_arch.yaml
+        run: cd /home/runner/work/libfprint/libfprint && cp nfpm_arch_sample.yaml nfpm_arch.yaml && sed -i "s/COMMITID/$(git rev-parse --short HEAD)/g" nfpm_arch.yaml && cd /home/runner/work/libfprint/libfprint/build && sed -i "s/LIBVERSION/$PKG_VERSION/g" /home/runner/work/libfprint/libfprint/nfpm_arch.yaml
       - name: Generating DEB package
         run: nfpm pkg --packager deb --config ./nfpm_deb.yaml --target ./output/
       - name: Generating RPM package
         run: nfpm pkg --packager rpm --config ./nfpm_rpm.yaml --target ./output/
       - name: Generating ArchLinux package
         run: nfpm pkg --packager archlinux --config ./nfpm_arch.yaml --target ./output/
-      - uses: actions/upload-artifact@v7
+
+      - name: Create GitHub release
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+        uses: softprops/action-gh-release@v3
         with:
-          name: meson-build-artifacts
-          path: /home/runner/work/libfprint/libfprint/build
-      - uses: actions/upload-artifact@v7
-        with:
-          name: deb-rpm-arch-packages
-          path: /home/runner/work/libfprint/libfprint/output
+          tag_name: ${{ steps.rel.outputs.tag }}
+          generate_release_notes: true
+          files: /home/runner/work/libfprint/libfprint/output/*
