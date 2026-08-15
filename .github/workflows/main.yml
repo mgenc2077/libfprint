@@ -18,7 +18,11 @@ jobs:
         with:
           python-version: '3.x'
       - name: Install dependencies
-        run: sudo apt-get install -y libgusb-dev libgirepository1.0-dev libnss3-dev libgudev-1.0-dev gtk-doc-tools libopencv-dev doctest-dev
+        # Only what the goodixtls53xd driver + packaging need: gusb,
+        # gobject-introspection (for the GIR/typelib nfpm ships), and openssl
+        # (libssl-dev) for the goodixtls TLS helper. pixman/cairo/nss/opencv are
+        # omitted since we build a single driver, and gtk-doc since docs are off.
+        run: sudo apt-get install -y libgusb-dev libgirepository1.0-dev libssl-dev
       - uses: BSFishy/meson-build@v1.0.3
         with:
           action: build
@@ -27,7 +31,11 @@ jobs:
           # -Wincompatible-pointer-types etc. to errors), also pass
           # -Dc_args=-Wno-error=incompatible-pointer-types via a plain
           # `meson setup` run-step instead of this action.
-          setup-options: --prefix /usr/ --buildtype=release -Dwerror=false
+          # -Ddrivers=goodixtls53xd: build only the 538d driver (avoids pixman
+          # via aes3500). -Dudev_rules=enabled: our single driver doesn't pull
+          # the 'udev' helper, so rules are off by default and packaging needs
+          # 70-libfprint-2.rules — force it on. -Ddoc=false: docs aren't packaged.
+          setup-options: --prefix /usr/ --buildtype=release -Dwerror=false -Ddrivers=goodixtls53xd -Dc_args=-Wno-error=incompatible-pointer-types -Dudev_rules=enabled -Dudev_rules_dir=/usr/lib/udev/rules.d -Ddoc=false
           options: --verbose
           meson-version: 1.12.0
           ninja-version: 1.13.0
