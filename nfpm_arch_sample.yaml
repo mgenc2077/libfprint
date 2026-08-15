@@ -12,7 +12,11 @@ replaces:
   - libfprint
 provides:
   - libfprint
-  - libfprint-2.so
+  # Versioned soname, not bare 'libfprint-2.so': Arch tags soname deps with the
+  # major version + ELF class ('-64'), and fprintd depends on exactly
+  # 'libfprint-2.so=2-64'. An unversioned provide does NOT satisfy that, so
+  # pacman would pull stock libfprint (replacing this fork) to meet fprintd's dep.
+  - libfprint-2.so=2-64
 
 depends:
   - glib2
