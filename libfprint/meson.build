@@ -362,21 +362,22 @@ if install_udev_rules
     )
 endif
 
-udev_hwdb_list_updater = custom_target('udev-hwdb-list-updater',
-    output: udev_hwdb_list,
-    command: [ sync_unsupported_files, udev_hwdb_list_file ],
-)
-
+# NOTE (fork): upstream's 'udev-hwdb-list-updater' / 'sync-unsupported-devices'
+# targets re-pull the unsupported-device list from the freedesktop wiki, which
+# re-adds 27c6:538d (now handled by the goodixtls53xd driver in this fork) and
+# is meaningless for a GitHub fork with no wiki. They are removed here.
+#
+# 'sync-udev-hwdb' is kept but now regenerates data/autosuspend.hwdb purely from
+# the LOCAL allowlist in fprint-list-udev-hwdb.c + the built driver id_tables --
+# no network, no wiki. Run it after changing a driver's id_table.
 run_target('sync-udev-hwdb',
-    depends: udev_hwdb_list_updater,
+    depends: udev_hwdb_generator,
     command: [
         'cp', '-v',
         udev_hwdb_generator.full_path(),
         meson.project_source_root() / 'data'
     ]
 )
-
-alias_target('sync-unsupported-devices', udev_hwdb_list_updater)
 
 supported_devices = executable('fprint-list-supported-devices',
     'fprint-list-supported-devices.c',

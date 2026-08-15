@@ -103,8 +103,6 @@ mathlib_dep = cc.find_library('m', required: false)
 sh = find_program('sh', required: true)
 cairo_dep = dependency('cairo', required: false)
 
-sync_unsupported_files = files('scripts' / 'sync-unsupported-devices.py')
-
 # introspection scanning and Gio-2.0.gir
 gobject_introspection = dependency('gobject-introspection-1.0', required: get_option('introspection'))
 
@@ -342,7 +340,9 @@ subdir('tests')
 
 subdir('examples')
 
-meson.add_dist_script(sync_unsupported_files, '--check', udev_hwdb_list_file)
+# NOTE (fork): upstream checks the allowlist against the freedesktop wiki at
+# `meson dist` time. Dropped here -- the fork intentionally diverges from that
+# list (27c6:538d is driver-supported), and there is no wiki to check against.
 
 pkgconfig = import('pkgconfig')
 pkgconfig.generate(
