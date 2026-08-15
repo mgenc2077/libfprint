@@ -50,7 +50,10 @@
 // extra end
 #define GOODIX53XD_RAW_FRAME_SIZE                                               \
     (GOODIX53XD_HEIGHT * GOODIX53XD_SCAN_WIDTH) / 4 * 6
-#define GOODIX53XD_CAP_FRAMES 10 // Number of frames we capture per swipe
+#define GOODIX53XD_CAP_FRAMES 10 // Number of frames we capture per press
+// Upscale factor applied to the averaged press image so MINDTCT extracts
+// enough minutiae from the small 64x80 sensor (cf. goodix53x5 driver).
+#define GOODIX53XD_ENLARGE_FACTOR 2
 
 typedef unsigned short Goodix53xdPix;
 
@@ -362,16 +365,6 @@ static void check_none_cmd(FpDevice* dev, guint8* data, guint16 len,
     fpi_ssm_next_state(ssm);
 }
 
-static unsigned char get_pix(struct fpi_frame_asmbl_ctx* ctx,
-                             struct fpi_frame* frame, unsigned int x,
-                             unsigned int y)
-{
-    return frame->data[x + y * GOODIX53XD_WIDTH];
-}
-
-// Bitdepth is 12, but we have to fit it in a byte
-static unsigned char squash(int v) { return v / 16; }
-
 static void decode_frame(Goodix53xdPix frame[GOODIX53XD_FRAME_SIZE],
                          const guint8* raw_frame)
 {
@@ -390,28 +383,6 @@ static void decode_frame(Goodix53xdPix frame[GOODIX53XD_FRAME_SIZE],
             const int idx = x + y * GOODIX53XD_SCAN_WIDTH;
             frame[x + y * GOODIX53XD_WIDTH] = uncropped[idx];
         }
-    }
-}
-static int goodix_cmp_short(const void* a, const void* b)
-{
-    return (int) (*(short*) a - *(short*) b);
-}
-
-static void rotate_frame(Goodix53xdPix frame[GOODIX53XD_FRAME_SIZE])
-{
-    Goodix53xdPix buff[GOODIX53XD_FRAME_SIZE];
-
-    for (int y = 0; y != GOODIX53XD_HEIGHT; ++y) {
-        for (int x = 0; x != GOODIX53XD_WIDTH; ++x) {
-            buff[x * GOODIX53XD_WIDTH + y] = frame[x + y * GOODIX53XD_WIDTH];
-        }
-    }
-    memcpy(frame, buff, GOODIX53XD_FRAME_SIZE);
-}
-static void squash_frame(Goodix53xdPix* frame, guint8* squashed)
-{
-    for (int i = 0; i != GOODIX53XD_FRAME_SIZE; ++i) {
-        squashed[i] = squash(frame[i]);
     }
 }
 /**
@@ -449,52 +420,6 @@ static void squash_frame_linear(Goodix53xdPix* frame, guint8* squashed)
     }
 }
 
-/**
- * @brief Subtracts the background from the frame
- *
- * @param frame
- * @param background
- */
-static gboolean postprocess_frame(Goodix53xdPix frame[GOODIX53XD_FRAME_SIZE],
-                                  Goodix53xdPix background[GOODIX53XD_FRAME_SIZE])
-{
-    int sum = 0;
-    for (int i = 0; i != GOODIX53XD_FRAME_SIZE; ++i) {
-        Goodix53xdPix* og_px = frame + i;
-        Goodix53xdPix bg_px =  background[i];
-            if (bg_px > *og_px) {
-                *og_px = 0;
-            }
-            else {
-                *og_px -= bg_px;
-            }
-            *og_px = MAX(bg_px - *og_px, 0);
-            *og_px = MAX(*og_px - bg_px, 0);
-            sum += *og_px;
-            
-    }
-    if (sum == 0) {
-        fp_warn("frame darker than background, finger on scanner during "
-                "calibration?");
-    }
-    return sum != 0;
-}
-
-typedef struct _frame_processing_info {
-    FpiDeviceGoodixTls53XD* dev;
-    GSList** frames;
-
-} frame_processing_info;
-
-static void process_frame(Goodix53xdPix* raw_frame, frame_processing_info* info)
-{
-    struct fpi_frame* frame =
-        g_malloc(GOODIX53XD_FRAME_SIZE + sizeof(struct fpi_frame));
-    //postprocess_frame(raw_frame, info->dev->empty_img);
-    squash_frame_linear(raw_frame, frame->data);
-
-    *(info->frames) = g_slist_append(*(info->frames), frame);
-}
 
 static void save_frame(FpiDeviceGoodixTls53XD* self, guint8* raw)
 {
@@ -518,33 +443,55 @@ static void scan_on_read_img(FpDevice* dev, guint8* data, guint16 len,
         fpi_ssm_jump_to_state(ssm, SCAN_STAGE_SWITCH_TO_FDT_MODE);
     }
     else {
+        // 538d is a PRESS sensor. The original code ran swipe assembly
+        // (fpi_do_movement_estimation + fpi_assemble_frames) over the captured
+        // frames, which produced a non-deterministic 192xN staircase (see the
+        // "height is -711" debug) — different every capture, so enrolled and
+        // verified prints never shared minutiae (Bozorth scores 0-3/24).
+        //
+        // Instead, average the captured frames into one stable image, then
+        // upscale 2x so MINDTCT extracts enough minutiae from the small sensor
+        // (same rationale as the goodix53x5 driver's 2x enlarge).
         GSList* raw_frames = g_slist_nth(self->frames, 1);
-
         FpImageDevice* img_dev = FP_IMAGE_DEVICE(dev);
-        struct fpi_frame_asmbl_ctx assembly_ctx;
-        assembly_ctx.frame_width = GOODIX53XD_WIDTH;
-        assembly_ctx.frame_height = GOODIX53XD_HEIGHT;
-        assembly_ctx.image_width = GOODIX53XD_WIDTH*3;
-        assembly_ctx.get_pixel = get_pix;
 
-        GSList* frames = NULL;
-        frame_processing_info pinfo = {.dev = self, .frames = &frames};
+        guint32 accum[GOODIX53XD_FRAME_SIZE] = {0};
+        guint n = 0;
+        for (GSList* e = raw_frames; e; e = e->next) {
+            Goodix53xdPix* f = e->data;
+            if (!f)
+                continue;
+            for (int i = 0; i < GOODIX53XD_FRAME_SIZE; ++i)
+                accum[i] += f[i];
+            ++n;
+        }
 
-        g_slist_foreach(raw_frames, (GFunc) process_frame, &pinfo);
-        frames = g_slist_reverse(frames);
+        Goodix53xdPix averaged[GOODIX53XD_FRAME_SIZE];
+        for (int i = 0; i < GOODIX53XD_FRAME_SIZE; ++i)
+            averaged[i] = n ? (Goodix53xdPix) (accum[i] / n) : 0;
 
-        fpi_do_movement_estimation(&assembly_ctx, frames);
-        FpImage* img = fpi_assemble_frames(&assembly_ctx, frames);
+        guint8 squashed[GOODIX53XD_FRAME_SIZE];
+        squash_frame_linear(averaged, squashed);
 
-        g_slist_free_full(frames, g_free);
+        // Nearest-neighbour upscale. Counter-intuitively this matches better
+        // than bilinear on this tiny 64px-wide sensor: bilinear over-smooths
+        // the ridges so MINDTCT locks onto non-reproducible noise minutiae
+        // (verify scored 0/24), whereas the sharp nearest-neighbour ridges
+        // give stable, reproducible minutiae (verify scored 33/24).
+        const int up = GOODIX53XD_ENLARGE_FACTOR;
+        const int ow = GOODIX53XD_WIDTH * up;
+        const int oh = GOODIX53XD_HEIGHT * up;
+        FpImage* img = fp_image_new(ow, oh);
+        for (int y = 0; y < oh; ++y)
+            for (int x = 0; x < ow; ++x)
+                img->data[y * ow + x] =
+                    squashed[(y / up) * GOODIX53XD_WIDTH + (x / up)];
+
         g_slist_free_full(self->frames, g_free);
         self->frames = g_slist_alloc();
 
         fpi_image_device_image_captured(img_dev, img);
-
-
         fpi_image_device_report_finger_status(img_dev, FALSE);
-
         fpi_ssm_next_state(ssm);
     }
 }

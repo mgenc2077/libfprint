@@ -532,6 +532,12 @@ void goodix_send_nop(FpDevice *dev, GoodixNoneCallback callback,
   GoodixNop payload = {.unknown = 0x00000000};
   GoodixCallbackInfo *cb_info;
 
+  // NOP is fire-and-forget (reply=FALSE) and is completed synchronously by the
+  // goodix_receive_done() call below. Arming a driver-level timeout here is not
+  // only pointless but harmful: goodix_send_pack() runs a nested main loop via
+  // fpi_usb_transfer_submit_sync(), during which the just-armed timeout can be
+  // dispatched before we cancel it, producing a spurious "Command timed out".
+  // Pass timeout_ms=0; the USB transfer itself still has GOODIX_TIMEOUT.
   if (callback) {
     cb_info = malloc(sizeof(GoodixCallbackInfo));
 
@@ -539,14 +545,14 @@ void goodix_send_nop(FpDevice *dev, GoodixNoneCallback callback,
     cb_info->user_data = user_data;
 
     goodix_send_protocol(dev, GOODIX_CMD_NOP, (guint8 *)&payload,
-                         sizeof(payload), NULL, FALSE, GOODIX_TIMEOUT, FALSE,
+                         sizeof(payload), NULL, FALSE, 0, FALSE,
                          goodix_receive_none, cb_info);
     goodix_receive_done(dev, NULL, 0, NULL);
     return;
   }
 
   goodix_send_protocol(dev, GOODIX_CMD_NOP, (guint8 *)&payload, sizeof(payload),
-                       NULL, FALSE, GOODIX_TIMEOUT, FALSE, NULL, NULL);
+                       NULL, FALSE, 0, FALSE, NULL, NULL);
   goodix_receive_done(dev, NULL, 0, NULL);
 }
 
