@@ -165,11 +165,7 @@ process_cmds (FpDeviceVirtualDevice * self,
     {
       g_autofree gchar *cmd = NULL;
 
-      /* TODO: g_ptr_array_steal_index requires GLib 2.58, we depend on 2.56 */
-      cmd = g_ptr_array_index (self->pending_commands, 0);
-      g_ptr_array_index (self->pending_commands, 0) = NULL;
-      g_ptr_array_remove_index (self->pending_commands, 0);
-
+      cmd = g_ptr_array_steal_index (self->pending_commands, 0);
       g_debug ("Processing command %s", cmd);
 
       /* These are always processed. */
@@ -526,8 +522,8 @@ dev_verify (FpDevice *dev)
 
   if (scan_id)
     {
+      g_autoptr(FpPrint) new_scan = NULL;
       GVariant *data = NULL;
-      FpPrint *new_scan;
       FpPrint *print;
       gboolean success;
 
@@ -549,6 +545,9 @@ dev_verify (FpDevice *dev)
       else
         {
           success = fp_print_equal (print, new_scan);
+
+          if (success)
+            fp_print_set_finger (new_scan, fp_print_get_finger (print));
         }
 
       if (!self->match_reported)
@@ -556,7 +555,7 @@ dev_verify (FpDevice *dev)
           self->match_reported = TRUE;
           fpi_device_verify_report (dev,
                                     success ? FPI_MATCH_SUCCESS : FPI_MATCH_FAIL,
-                                    new_scan,
+                                    g_steal_pointer (&new_scan),
                                     NULL);
         }
     }
@@ -733,7 +732,13 @@ dev_deinit (FpDevice *dev)
     }
 
   if (!self->keep_alive)
-    stop_listener (self);
+    {
+      stop_listener (self);
+      self->supports_cancellation = TRUE;
+    }
+
+  self->enroll_stages_passed = 0;
+  self->match_reported = FALSE;
 
   fpi_device_close_complete (dev, NULL);
 }
@@ -766,6 +771,7 @@ fpi_device_virtual_device_class_init (FpDeviceVirtualDeviceClass *klass)
 {
   FpDeviceClass *dev_class = FP_DEVICE_CLASS (klass);
   GObjectClass *object_class = G_OBJECT_CLASS (klass);
+  const char *hot_seconds;
 
   object_class->finalize = fpi_device_virtual_device_finalize;
 
@@ -780,6 +786,19 @@ fpi_device_virtual_device_class_init (FpDeviceVirtualDeviceClass *klass)
   dev_class->verify = dev_verify;
   dev_class->enroll = dev_enroll;
   dev_class->cancel = dev_cancel;
+
+  if ((hot_seconds = g_getenv ("FP_VIRTUAL_DEVICE_HOT_SECONDS")) &&
+      *hot_seconds != '\0')
+    {
+      gint64 hot_seconds_value;
+
+      hot_seconds_value = g_ascii_strtoll (hot_seconds, NULL, 10);
+      if (hot_seconds_value >= G_MAXINT32 || hot_seconds_value < 0)
+        hot_seconds_value = -1;
+
+      dev_class->temp_hot_seconds = hot_seconds_value;
+      g_debug ("device hot seconds set to %d", dev_class->temp_hot_seconds);
+    }
 
   fpi_device_class_auto_initialize_features (dev_class);
 }

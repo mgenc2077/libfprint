@@ -25,8 +25,8 @@ sudo ./_build/examples/{img-capture,enroll,verify}   # hardware tests, need a fl
 scripts/uncrustify.sh                                 # format (CI style)
 ```
 
-- On GCC 14+ add `-Dc_args=-Wno-error=incompatible-pointer-types` (this is
-  1.94.1-era code that predates several warnings becoming default errors).
+- The driver compiles cleanly under the default `-Werror`; no `-Dwerror=false`
+  or `-Wno-error` flags are needed (it was cleaned up during the 1.94.100 sync).
 - `-Ddrivers=goodixtls53xd` avoids pixman/nss/cairo that other drivers pull in.
 - The driver's umockdev test infra is not set up here; validate on real hardware.
 

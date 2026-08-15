@@ -10,6 +10,10 @@ This is intentionally a **single-device build**: the CI and recommended build
 compile only the `goodixtls53xd` driver. It is not a general libfprint
 replacement — it exists to make the 538d work.
 
+> **Base:** synced with upstream libfprint **1.94.100**. The `goodixtls53xd`
+> driver is layered on top of a clean 1.94.100 tree (enroll/verify verified on
+> hardware).
+
 ## ⚠️ Prerequisite: flash the sensor firmware first
 
 The driver hard-requires the community firmware `GF5298_GM168SEC_APP_13016`. You
@@ -40,8 +44,8 @@ ninja -C _build
 ```
 
 `-Ddrivers=goodixtls53xd` keeps the build to this one driver (and avoids pulling
-pixman/nss/etc. that other drivers need). On a modern GCC (14+) add
-`-Dc_args=-Wno-error=incompatible-pointer-types` — this is 1.94.1-era code.
+pixman/nss/etc. that other drivers need). The driver compiles cleanly under the
+default `-Werror` — no warning-suppression flags needed.
 
 ## Test on hardware
 
